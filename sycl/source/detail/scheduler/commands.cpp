@@ -1811,7 +1811,8 @@ void EmptyCommand::printDot(std::ostream &Stream) const {
   Stream << "\"" << this << "\" [style=filled, fillcolor=\"#8d8f29\", label=\"";
 
   Stream << "ID = " << this << "\\n";
-  Stream << "EMPTY NODE" << "\\n";
+  Stream << "EMPTY NODE"
+         << "\\n";
 
   Stream << "\"];" << std::endl;
 
@@ -2307,8 +2308,7 @@ ur_mem_flags_t AccessModeToUr(access::mode AccessorMode) {
 }
 
 // Sets arguments for a given kernel and device based on the argument type.
-// Refactored from SetKernelParamsAndLaunch to allow it to be used in the graphs
-// extension.
+// This is a legacy path which the graphs extension still uses.
 static void SetArgBasedOnType(
     adapter_impl &Adapter, ur_kernel_handle_t Kernel,
     device_image_impl *DeviceImageImpl,
@@ -3850,7 +3850,8 @@ void UpdateCommandBufferCommand::printDot(std::ostream &Stream) const {
   Stream << "\"" << this << "\" [style=filled, fillcolor=\"#8d8f29\", label=\"";
 
   Stream << "ID = " << this << "\\n";
-  Stream << "CommandBuffer Command Update" << "\\n";
+  Stream << "CommandBuffer Command Update"
+         << "\\n";
 
   Stream << "\"];" << std::endl;
 
