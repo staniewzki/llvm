@@ -1047,48 +1047,85 @@ ur_result_t ur_command_list_manager::appendKernelLaunchWithArgsExp(
     ur_event_handle_t phEvent) {
   TRACK_SCOPE_LATENCY(
       "ur_queue_immediate_in_order_t::enqueueKernelLaunchWithArgsExp");
-  {
-    std::scoped_lock<ur_shared_mutex> guard(hKernel->Mutex);
-    for (uint32_t argIndex = 0; argIndex < numArgs; argIndex++) {
-      switch (pArgs[argIndex].type) {
-      case UR_EXP_KERNEL_ARG_TYPE_LOCAL:
-        UR_CALL(hKernel->setArgValue(pArgs[argIndex].index,
-                                     pArgs[argIndex].size, nullptr, nullptr));
-        break;
-      case UR_EXP_KERNEL_ARG_TYPE_VALUE:
-        UR_CALL(hKernel->setArgValue(pArgs[argIndex].index,
-                                     pArgs[argIndex].size, nullptr,
-                                     pArgs[argIndex].value.value));
-        break;
-      case UR_EXP_KERNEL_ARG_TYPE_POINTER:
-        UR_CALL(hKernel->setArgPointer(pArgs[argIndex].index, nullptr,
-                                       pArgs[argIndex].value.pointer));
-        break;
-      case UR_EXP_KERNEL_ARG_TYPE_MEM_OBJ:
-        // TODO: import helper for converting ur flags to internal equivalent
-        UR_CALL(hKernel->addPendingMemoryAllocation(
-            {pArgs[argIndex].value.memObjTuple.hMem,
-             ur_mem_buffer_t::device_access_mode_t::read_write,
-             pArgs[argIndex].index}));
-        break;
-      case UR_EXP_KERNEL_ARG_TYPE_SAMPLER: {
-        UR_CALL(
-            hKernel->setArgValue(argIndex, sizeof(void *), nullptr,
-                                 &pArgs[argIndex].value.sampler->ZeSampler));
-        break;
-      }
-      default:
-        return UR_RESULT_ERROR_INVALID_ENUMERATION;
-      }
+
+  UR_ASSERT(hKernel, UR_RESULT_ERROR_INVALID_NULL_HANDLE);
+  UR_ASSERT(hContext->getPlatform()
+                ->ZeCommandListAppendLaunchKernelWithArgumentsExt
+                .zeCommandListAppendLaunchKernelWithArguments,
+            UR_RESULT_ERROR_UNSUPPORTED_FEATURE);
+
+  // TODO: remove memory allocation
+  std::vector<void *> kernelArgs(numArgs, nullptr);
+  std::scoped_lock<ur_shared_mutex> Lock(hKernel->Mutex);
+
+  for (uint32_t argIndex = 0; argIndex < numArgs; argIndex++) {
+    switch (pArgs[argIndex].type) {
+    case UR_EXP_KERNEL_ARG_TYPE_LOCAL:
+      break;
+    case UR_EXP_KERNEL_ARG_TYPE_VALUE:
+      kernelArgs[argIndex] = (void *)pArgs[argIndex].value.value;
+      break;
+    case UR_EXP_KERNEL_ARG_TYPE_POINTER:
+      kernelArgs[argIndex] = (void *)&pArgs[argIndex].value.pointer;
+      break;
+    case UR_EXP_KERNEL_ARG_TYPE_MEM_OBJ:
+      UR_CALL(hKernel->addPendingMemoryAllocation(
+          {pArgs[argIndex].value.memObjTuple.hMem,
+           ur_mem_buffer_t::device_access_mode_t::read_write,
+           pArgs[argIndex].index}));
+      break;
+    case UR_EXP_KERNEL_ARG_TYPE_SAMPLER: {
+      kernelArgs[argIndex] = &pArgs[argIndex].value.sampler->ZeSampler;
+      break;
+    }
+    default:
+      return UR_RESULT_ERROR_INVALID_ENUMERATION;
     }
   }
 
-  UR_CALL(appendKernelLaunch(hKernel, workDim, pGlobalWorkOffset,
-                             pGlobalWorkSize, pLocalWorkSize,
-                             numPropsInLaunchPropList, launchPropList,
-                             numEventsInWaitList, phEventWaitList, phEvent));
+  for (uint32_t propIndex = 0; propIndex < numPropsInLaunchPropList;
+       propIndex++) {
+    if (launchPropList[propIndex].id != UR_KERNEL_LAUNCH_PROPERTY_ID_IGNORE) {
+      // We don't support any other properties.
+      return UR_RESULT_ERROR_UNSUPPORTED_FEATURE;
+    }
+  }
+
+  UR_ASSERT(hKernel->getProgramHandle(), UR_RESULT_ERROR_INVALID_NULL_POINTER);
+  UR_ASSERT(workDim > 0, UR_RESULT_ERROR_INVALID_WORK_DIMENSION);
+  UR_ASSERT(workDim < 4, UR_RESULT_ERROR_INVALID_WORK_DIMENSION);
+
+  ze_kernel_handle_t hZeKernel = hKernel->getZeHandle(hDevice.get());
+
+  ze_group_count_t zeThreadGroupDimensions{1, 1, 1};
+  uint32_t WG[3]{};
+  UR_CALL(calculateKernelWorkDimensions(hZeKernel, hDevice.get(),
+                                        zeThreadGroupDimensions, WG, workDim,
+                                        pGlobalWorkSize, pLocalWorkSize));
+
+  ze_group_size_t groupSize = {WG[0], WG[1], WG[2]};
+
+  auto zeSignalEvent = getSignalEvent(phEvent, UR_COMMAND_KERNEL_LAUNCH);
+  auto waitListView = getWaitListView(phEventWaitList, numEventsInWaitList);
+
+  UR_CALL(hKernel->prepareForSubmission(
+      hContext.get(), hDevice.get(), pGlobalWorkOffset, workDim, WG[0], WG[1],
+      WG[2], getZeCommandList(), waitListView));
+
+  {
+    TRACK_SCOPE_LATENCY("ur_command_list_manager::"
+                        "zeCommandListAppendLaunchKernel");
+    ZE2UR_CALL(hContext->getPlatform()
+                   ->ZeCommandListAppendLaunchKernelWithArgumentsExt
+                   .zeCommandListAppendLaunchKernelWithArguments,
+               (getZeCommandList(), hZeKernel, zeThreadGroupDimensions,
+                groupSize, kernelArgs.data(), nullptr, zeSignalEvent,
+                waitListView.num, waitListView.handles));
+  }
 
   recordSubmittedKernel(hKernel);
+
+  postSubmit(hZeKernel, pGlobalWorkOffset);
 
   return UR_RESULT_SUCCESS;
 }
